@@ -1,0 +1,408 @@
+-- สคริปต์ล็อคหัว + ESP + Map Box Spin (ไม่ล็อคคนตาย และไม่ล็อคคนสีเขียว)
+-- ใส่ใน LocalScript
+
+local player = game.Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local head = character:WaitForChild("Head")
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+-- ====== การตั้งค่า ======
+local settings = {
+    -- ระบบหมุน (Map Box Spin)
+    spinSpeed = 100,
+    spinEnabled = true,
+    spinKey = Enum.KeyCode.V,
+    
+    -- ระบบล็อคหัว
+    lockEnabled = true,
+    lockRange = 100,
+    lockKey = Enum.KeyCode.Q,
+    
+    -- ระบบ ESP
+    espEnabled = true,
+    espRange = 200,
+    
+    -- ระบบสีเขียว
+    skipGreen = true,           -- ข้ามคนสีเขียว
+    greenThreshold = 0.3,      -- ความไวในการตรวจจับสีเขียว (0-1)
+    checkBodyParts = true,      -- ตรวจสอบทุกส่วนของร่างกาย
+    checkClothing = true,       -- ตรวจสอบเสื้อผ้าด้วย
+    
+    -- ระบบทีม
+    teamCheck = true,          -- เช็คทีม
+    skipSameTeam = true        -- ข้ามคนทีมเดียวกัน
+}
+
+-- ====== ฟังก์ชันตรวจสอบว่าตัวละครตายหรือไม่ ======
+local function isCharacterDead(target)
+    if not target then return true end
+    
+    local targetHumanoid = target:FindFirstChild("Humanoid")
+    if not targetHumanoid then return true end
+    
+    if targetHumanoid.Health <= 0 then return true end
+    
+    if targetHumanoid:GetState() == Enum.HumanoidStateType.Dead then return true end
+    
+    if targetHumanoid:GetState() == Enum.HumanoidStateType.Ragdoll then return true end
+    
+    if not target:FindFirstChild("Head") then return true end
+    
+    if not target:FindFirstChild("Torso") and not target:FindFirstChild("HumanoidRootPart") then
+        return true
+    end
+    
+    return false
+end
+
+-- ====== ฟังก์ชันตรวจสอบสีเขียว ======
+local function isGreenColor(color)
+    if not color then return false end
+    
+    -- แยกค่าสี RGB
+    local r, g, b = color.R, color.G, color.B
+    
+    -- ตรวจสอบว่าสีเขียวเด่นกว่าสีอื่น
+    if g > r and g > b then
+        -- คำนวณความเข้มของสีเขียว
+        local greenDominance = g - math.max(r, b)
+        if greenDominance > settings.greenThreshold then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- ====== ฟังก์ชันตรวจสอบว่าตัวละครมีสีเขียวหรือไม่ ======
+local function isCharacterGreen(target)
+    if not target then return false end
+    
+    -- ตรวจสอบส่วนต่างๆ ของร่างกาย
+    local bodyParts = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "HumanoidRootPart"}
+    
+    for _, partName in ipairs(bodyParts) do
+        local part = target:FindFirstChild(partName)
+        if part then
+            -- ตรวจสอบสีของส่วนนั้น
+            if part:IsA("BasePart") then
+                if isGreenColor(part.Color) then
+                    return true
+                end
+            end
+            
+            -- ตรวจสอบ SurfaceGui หรือ Decal
+            if settings.checkClothing then
+                for _, child in ipairs(part:GetChildren()) do
+                    if child:IsA("Decal") or child:IsA("Texture") then
+                        -- ตรวจสอบสีจาก Texture (ถ้ามี)
+                        if child:IsA("Decal") and child.Texture then
+                            -- ตรวจสอบจากชื่อ Texture ว่ามีคำว่า green หรือไม่
+                            if string.lower(child.Texture) and string.find(string.lower(child.Texture), "green") then
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- ตรวจสอบ Shirt และ Pants
+    if settings.checkClothing then
+        local shirt = target:FindFirstChild("Shirt")
+        local pants = target:FindFirstChild("Pants")
+        
+        if shirt and shirt.ShirtTemplate then
+            if string.find(string.lower(tostring(shirt.ShirtTemplate)), "green") then
+                return true
+            end
+        end
+        
+        if pants and pants.PantsTemplate then
+            if string.find(string.lower(tostring(pants.PantsTemplate)), "green") then
+                return true
+            end
+        end
+    end
+    
+    -- ตรวจสอบ Body Colors
+    local bodyColors = target:FindFirstChild("Body Colors")
+    if bodyColors then
+        -- ตรวจสอบสีผิว
+        if isGreenColor(bodyColors.HeadColor) or isGreenColor(bodyColors.TorsoColor) then
+            return true
+        end
+        
+        -- ตรวจสอบสีแขนขา
+        if isGreenColor(bodyColors.LeftArmColor) or isGreenColor(bodyColors.RightArmColor) then
+            return true
+        end
+        
+        if isGreenColor(bodyColors.LeftLegColor) or isGreenColor(bodyColors.RightLegColor) then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- ====== ฟังก์ชันตรวจสอบทีม ======
+local function isSameTeam(target)
+    if not settings.teamCheck or not settings.skipSameTeam then return false end
+    
+    local targetTeam = target:FindFirstChild("Team")
+    local playerTeam = character:FindFirstChild("Team")
+    
+    if targetTeam and playerTeam then
+        if targetTeam.Value == playerTeam.Value then
+            return true
+        end
+    end
+    
+    -- ตรวจสอบจากชื่อทีม
+    local targetTeamName = target:FindFirstChild("TeamName")
+    local playerTeamName = character:FindFirstChild("TeamName")
+    
+    if targetTeamName and playerTeamName then
+        if targetTeamName.Value == playerTeamName.Value then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- ====== ฟังก์ชันหลักตรวจสอบว่าควรข้ามหรือไม่ ======
+local function shouldSkip(target)
+    -- ข้ามคนตาย
+    if isCharacterDead(target) then return true end
+    
+    -- ข้ามคนสีเขียว
+    if settings.skipGreen and isCharacterGreen(target) then return true end
+    
+    -- ข้ามคนทีมเดียวกัน
+    if isSameTeam(target) then return true end
+    
+    return false
+end
+
+-- ====== ระบบ ESP ======
+local espFolder = Instance.new("Folder")
+espFolder.Name = "ESP_Folder"
+espFolder.Parent = game.CoreGui
+
+local function createESP(target)
+    if espFolder:FindFirstChild(target.Name) then return end
+    
+    local esp = Instance.new("BillboardGui")
+    esp.Name = target.Name
+    esp.Adornee = target:WaitForChild("Head")
+    esp.Size = UDim2.new(0, 200, 0, 50)
+    esp.AlwaysOnTop = true
+    esp.MaxDistance = settings.espRange
+    esp.Parent = espFolder
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundTransparency = 1
+    frame.Parent = esp
+    
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(1, 0, 0.4, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = target.Name
+    nameLabel.TextColor3 = Color3.new(1, 0, 0)
+    nameLabel.TextStrokeTransparency = 0
+    nameLabel.TextScaled = true
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.Parent = frame
+    
+    local healthLabel = Instance.new("TextLabel")
+    healthLabel.Size = UDim2.new(1, 0, 0.3, 0)
+    healthLabel.Position = UDim2.new(0, 0, 0.4, 0)
+    healthLabel.BackgroundTransparency = 1
+    healthLabel.TextColor3 = Color3.new(0, 1, 0)
+    healthLabel.TextStrokeTransparency = 0
+    healthLabel.TextScaled = true
+    healthLabel.Font = Enum.Font.Gotham
+    healthLabel.Parent = frame
+    
+    local distanceLabel = Instance.new("TextLabel")
+    distanceLabel.Size = UDim2.new(1, 0, 0.3, 0)
+    distanceLabel.Position = UDim2.new(0, 0, 0.7, 0)
+    distanceLabel.BackgroundTransparency = 1
+    distanceLabel.TextColor3 = Color3.new(1, 1, 0)
+    distanceLabel.TextStrokeTransparency = 0
+    distanceLabel.TextScaled = true
+    distanceLabel.Font = Enum.Font.Gotham
+    distanceLabel.Parent = frame
+    
+    return esp
+end
+
+-- ====== ระบบหมุน (Map Box Spin) ======
+local spinning = false
+local function spinLoop()
+    while spinning do
+        humanoidRootPart.CFrame = humanoidRootPart.CFrame * CFrame.Angles(0, math.rad(settings.spinSpeed), 0)
+        wait(0.01)
+    end
+end
+
+-- ====== ระบบล็อคหัว ======
+local isLocking = false
+local currentTarget = nil
+
+local function findNearestEnemy()
+    local nearest = nil
+    local shortestDistance = settings.lockRange
+    
+    for _, enemy in ipairs(game.Workspace:GetChildren()) do
+        if enemy:IsA("Model") and enemy ~= character then
+            -- ข้ามคนที่ควรข้าม (ตาย, สีเขียว, ทีมเดียวกัน)
+            if shouldSkip(enemy) then
+                continue
+            end
+            
+            local enemyHead = enemy:FindFirstChild("Head")
+            if enemyHead then
+                local distance = (enemyHead.Position - head.Position).magnitude
+                if distance < shortestDistance then
+                    shortestDistance = distance
+                    nearest = enemy
+                end
+            end
+        end
+    end
+    return nearest
+end
+
+-- ====== อัปเดต ESP ======
+local function updateESP()
+    for _, enemy in ipairs(game.Workspace:GetChildren()) do
+        if enemy:IsA("Model") and enemy ~= character then
+            -- ข้ามคนที่ควรข้าม
+            if shouldSkip(enemy) then
+                local esp = espFolder:FindFirstChild(enemy.Name)
+                if esp then
+                    esp:Destroy()
+                end
+                continue
+            end
+            
+            local enemyHumanoid = enemy:FindFirstChild("Humanoid")
+            local enemyHead = enemy:FindFirstChild("Head")
+            
+            if enemyHumanoid and enemyHead and enemyHumanoid.Health > 0 then
+                local distance = (enemyHead.Position - head.Position).magnitude
+                
+                if distance <= settings.espRange then
+                    local esp = createESP(enemy)
+                    if esp then
+                        local frame = esp:FindFirstChild("Frame")
+                        if frame then
+                            local labels = frame:GetChildren()
+                            local nameLabel = labels[1]
+                            local healthLabel = labels[2]
+                            local distanceLabel = labels[3]
+                            
+                            if nameLabel then
+                                nameLabel.Text = enemy.Name
+                            end
+                            
+                            if healthLabel then
+                                healthLabel.Text = "❤️ " .. math.floor(enemyHumanoid.Health) .. "/" .. math.floor(enemyHumanoid.MaxHealth)
+                            end
+                            
+                            if distanceLabel then
+                                distanceLabel.Text = "📏 " .. math.floor(distance) .. "m"
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- ลบ ESP ที่ไม่จำเป็น
+    for _, esp in ipairs(espFolder:GetChildren()) do
+        local target = game.Workspace:FindFirstChild(esp.Name)
+        if not target or shouldSkip(target) then
+            esp:Destroy()
+        end
+    end
+end
+
+-- ====== ระบบปุ่ม ======
+local UserInputService = game:GetService("UserInputService")
+
+UserInputService.InputBegan:Connect(function(input)
+    -- ปุ่มหมุน (V)
+    if input.KeyCode == settings.spinKey then
+        settings.spinEnabled = not settings.spinEnabled
+        if settings.spinEnabled and not spinning then
+            spinning = true
+            spinLoop()
+        elseif not settings.spinEnabled then
+            spinning = false
+        end
+    end
+    
+    -- ปุ่มล็อคหัว (Q)
+    if input.KeyCode == settings.lockKey then
+        isLocking = not isLocking
+        if isLocking then
+            currentTarget = findNearestEnemy()
+            if currentTarget then
+                print("🎯 ล็อคเป้าหมาย: " .. currentTarget.Name)
+            else
+                print("❌ ไม่พบศัตรูที่เหมาะสม (ไม่ตาย ไม่เขียว ไม่ทีมเดียวกัน)")
+            end
+        else
+            currentTarget = nil
+            print("🔓 ยกเลิกการล็อค")
+        end
+    end
+end)
+
+-- ====== ลูปหลัก ======
+game:GetService("RunService").RenderStepped:Connect(function()
+    -- อัปเดต ESP
+    if settings.espEnabled then
+        updateESP()
+    end
+    
+    -- ล็อคหัว
+    if settings.lockEnabled and isLocking then
+        -- ตรวจสอบว่าเป้าหมายยังเหมาะสมหรือไม่
+        if currentTarget and shouldSkip(currentTarget) then
+            currentTarget = nil
+        end
+        
+        -- หาเป้าหมายใหม่ถ้าไม่มี
+        if not currentTarget then
+            currentTarget = findNearestEnemy()
+        end
+        
+        -- ล็อคหัวถ้ามีเป้าหมาย
+        if currentTarget and not shouldSkip(currentTarget) then
+            local targetHead = currentTarget.Head
+            head.CFrame = CFrame.new(head.Position, targetHead.Position)
+        end
+    end
+end)
+
+-- เริ่มหมุนอัตโนมัติ
+if settings.spinEnabled then
+    spinning = true
+    spinLoop()
+end
+
+-- ====== ข้อความแจ้งเตือน ======
+print("✅ สคริปต์รวมโหลดสำเร็จ!")
+print("🎮 V = หมุน | Q = ล็อคหัว")
+print("🚫 ไม่ล็อค: คนตาย, คนสีเขียว, คนทีมเดียวกัน")
+print("👁️ ESP จะแสดงเฉพาะศัตรูที่เหมาะสม")
